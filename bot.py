@@ -313,7 +313,14 @@ async def handle_choice(callback: CallbackQuery, state: FSMContext):
     await upsert_interview(user.id, user.username, **{q_key: answer})
     pos = QUESTION_ORDER.index(q_key)
     if pos + 1 < len(QUESTION_ORDER):
-        await send_question(callback.message, state, QUESTION_ORDER[pos + 1])
+        next_key = QUESTION_ORDER[pos + 1]
+        next_q = QUESTIONS[next_key]
+        text = f"{progress_bar(pos + 2, len(QUESTION_ORDER))}\n\n{next_q['text']}"
+        await state.set_state(STATE_MAP[next_key])
+        if next_q["type"] == "choice":
+            await bot.send_message(user.id, text, reply_markup=make_keyboard(next_q["options"], next_key))
+        else:
+            await bot.send_message(user.id, text)
     else:
         await finish_flow(callback.message, state, user)
 
