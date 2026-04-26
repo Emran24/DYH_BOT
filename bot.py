@@ -200,10 +200,13 @@ async def init_db():
 async def upsert_interview(user_id: int, username, **fields):
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id FROM interviews WHERE user_id=$1 AND finished_at IS NULL", user_id
+            "SELECT id FROM interviews WHERE user_id=$1 AND finished_at IS NULL",
+            user_id
         )
         if row:
-            set_parts = ", ".join(f"{k}=${i+2}" for i, k in enumerate(fields))
+            # Cast each value explicitly to TEXT to avoid IndeterminateDatatypeError
+            set_parts = ", ".join(
+                f"{k}=${i+2}::text" for i, k in enumerate(fields))
             await conn.execute(
                 f"UPDATE interviews SET {set_parts} WHERE user_id=${len(fields)+2} AND finished_at IS NULL",
                 *fields.values(), user_id
@@ -211,7 +214,11 @@ async def upsert_interview(user_id: int, username, **fields):
         else:
             cols = ["user_id", "username"] + list(fields.keys())
             vals = [user_id, username] + list(fields.values())
-            placeholders = ", ".join(f"${i+1}" for i in range(len(vals)))
+            # Placeholders: $1 and $2 are BIGINT/TEXT, rest cast to TEXT
+            placeholders = ", ".join(
+                f"${i+1}" if i < 2 else f"${i+1}::text"
+                for i in range(len(vals))
+            )
             await conn.execute(
                 f"INSERT INTO interviews ({', '.join(cols)}) VALUES ({placeholders})", *vals
             )
