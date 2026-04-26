@@ -231,16 +231,12 @@ async def upsert_interview(user_id: int, username, **fields):
             """,
                                user_id, str(username) if username else None,
                                fields.get("q1_city"), fields.get("q2_area"),
-                               fields.get("q3_budget"), fields.get(
-                                   "q4_overspend"),
-                               fields.get("q5_duration"), fields.get(
-                                   "q6_overdue"),
-                               fields.get("q7_biggest_pain"), fields.get(
-                                   "q8_contractor"),
-                               fields.get("q9_trust"), fields.get(
-                                   "q10_materials"),
-                               fields.get("q11_smeta"), fields.get("q12_wish"),
-                               fields.get("q13_tool"), fields.get("q14_nps"),
+                fields.get("q3_budget"), fields.get("q4_overspend"),
+                fields.get("q5_duration"), fields.get("q6_overdue"),
+                fields.get("q7_biggest_pain"), fields.get("q8_contractor"),
+                fields.get("q9_trust"), fields.get("q10_materials"),
+                fields.get("q11_smeta"), fields.get("q12_wish"),
+                fields.get("q13_tool"), fields.get("q14_nps"),
             )
 
 async def finish_interview(user_id: int):
@@ -369,13 +365,19 @@ async def finish_flow(message: Message, state: FSMContext, user):
         "Если захотите пройти ещё раз — /start"
     )
     s = await get_stats()
+    # Build readable user label
+    name_parts = [user.first_name or "", user.last_name or ""]
+    full_name = " ".join(p for p in name_parts if p).strip() or "Без имени"
+    username_str = f" (@{user.username})" if user.username else ""
+    user_label = f"{full_name}{username_str} [id: {user.id}]"
+
     for admin_id in ADMIN_IDS:
         try:
             await bot.send_message(
                 admin_id,
                 f"Новое завершённое интервью!\n"
                 f"Всего завершено: {s['finished']}\n"
-                f"Пользователь: @{getattr(user, 'username', None) or user.id}"
+                f"Пользователь: {user_label}"
             )
         except Exception:
             pass
