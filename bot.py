@@ -273,7 +273,8 @@ def make_keyboard(options, q_key) -> InlineKeyboardMarkup:
 
 def progress_bar(current: int, total: int) -> str:
     filled = round(current / total * 10)
-    return f"[{'▓' * filled}{'░' * (10 - filled)}] {current}/{total}"
+    bar = "▓" * filled + "░" * (10 - filled)
+    return f"Вопрос {current} из {total}\n[{bar}]"
 
 async def send_question(message: Message, state: FSMContext, q_key: str):
     q = QUESTIONS[q_key]
