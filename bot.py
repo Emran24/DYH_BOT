@@ -199,28 +199,48 @@ async def init_db():
 
 async def upsert_interview(user_id: int, username, **fields):
     async with pool.acquire() as conn:
+        # Check if an open interview exists
         row = await conn.fetchrow(
             "SELECT id FROM interviews WHERE user_id=$1 AND finished_at IS NULL",
             user_id
         )
         if row:
-            # Cast each value explicitly to TEXT to avoid IndeterminateDatatypeError
-            set_parts = ", ".join(
-                f"{k}=${i+2}::text" for i, k in enumerate(fields))
-            await conn.execute(
-                f"UPDATE interviews SET {set_parts} WHERE user_id=${len(fields)+2} AND finished_at IS NULL",
-                *fields.values(), user_id
-            )
+            # Build UPDATE using column names directly in SQL (safe — not user input)
+            # Pass all values as strings to avoid type inference issues
+            for col, val in fields.items():
+                await conn.execute(
+                    f"UPDATE interviews SET {col} = $1::text WHERE user_id = $2 AND finished_at IS NULL",
+                    str(val), user_id
+                )
         else:
-            cols = ["user_id", "username"] + list(fields.keys())
-            vals = [user_id, username] + list(fields.values())
-            # Placeholders: $1 and $2 are BIGINT/TEXT, rest cast to TEXT
-            placeholders = ", ".join(
-                f"${i+1}" if i < 2 else f"${i+1}::text"
-                for i in range(len(vals))
-            )
-            await conn.execute(
-                f"INSERT INTO interviews ({', '.join(cols)}) VALUES ({placeholders})", *vals
+            await conn.execute("""
+                INSERT INTO interviews (
+                    user_id, username,
+                    q1_city, q2_area, q3_budget, q4_overspend,
+                    q5_duration, q6_overdue, q7_biggest_pain, q8_contractor,
+                    q9_trust, q10_materials, q11_smeta, q12_wish,
+                    q13_tool, q14_nps
+                ) VALUES (
+                    $1, $2::text,
+                    $3::text, $4::text, $5::text, $6::text,
+                    $7::text, $8::text, $9::text, $10::text,
+                    $11::text, $12::text, $13::text, $14::text,
+                    $15::text, $16::text
+                )
+                ON CONFLICT DO NOTHING
+            """,
+                               user_id, str(username) if username else None,
+                               fields.get("q1_city"), fields.get("q2_area"),
+                               fields.get("q3_budget"), fields.get(
+                                   "q4_overspend"),
+                               fields.get("q5_duration"), fields.get(
+                                   "q6_overdue"),
+                               fields.get("q7_biggest_pain"), fields.get(
+                                   "q8_contractor"),
+                               fields.get("q9_trust"), fields.get(
+                                   "q10_materials"),
+                               fields.get("q11_smeta"), fields.get("q12_wish"),
+                               fields.get("q13_tool"), fields.get("q14_nps"),
             )
 
 async def finish_interview(user_id: int):
