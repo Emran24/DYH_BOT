@@ -65,22 +65,22 @@ QUESTIONS = {
     "q2_area": {
         "text": "Какая площадь квартиры?",
         "type": "choice",
-        "options": ["До 40 м²", "40–65 м²", "65–100 м²", "Более 100 м²"],
+        "options": ["До 30 м² (студия)", "30–50 м²", "50–80 м²", "80–120 м²", "Более 120 м²"],
     },
     "q3_budget": {
         "text": "Какой бюджет вы планировали на ремонт изначально?",
         "type": "choice",
-        "options": ["До 500 тыс. ₽", "500 тыс. – 1,5 млн ₽", "1,5 – 3 млн ₽", "Более 3 млн ₽"],
+        "options": ["До 200 тыс. ₽", "200 – 500 тыс. ₽", "500 тыс. – 1,5 млн ₽", "1,5 – 3 млн ₽", "Более 3 млн ₽"],
     },
     "q4_overspend": {
         "text": "Вышли ли вы за первоначальный бюджет?",
         "type": "choice",
-        "options": ["Нет, уложились", "Вышли на 10–20%", "Вышли на 20–50%", "Вышли более чем на 50%"],
+        "options": ["Нет, уложились", "Вышли на 10–20%", "Вышли на 20–50%", "Вышли более чем на 50%", "Затрудняюсь ответить"],
     },
     "q5_duration": {
         "text": "Сколько по факту длился ремонт?",
         "type": "choice",
-        "options": ["До 2 месяцев", "2–4 месяца", "4–8 месяцев", "Более 8 месяцев"],
+        "options": ["До 1 месяца", "1–2 месяца", "2–4 месяца", "4–8 месяцев", "Более 8 месяцев"],
     },
     "q6_overdue": {
         "text": "Подрядчики задержали срок сдачи?",
@@ -173,6 +173,14 @@ async def init_db():
     pool = await asyncpg.create_pool(url, min_size=1, max_size=5)
     async with pool.acquire() as conn:
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS referrals (
+                id          SERIAL PRIMARY KEY,
+                ref_code    TEXT NOT NULL UNIQUE,
+                owner_id    BIGINT NOT NULL,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS interviews (
                 id              SERIAL PRIMARY KEY,
                 user_id         BIGINT NOT NULL,
@@ -192,7 +200,8 @@ async def init_db():
                 q11_smeta       TEXT,
                 q12_wish        TEXT,
                 q13_tool        TEXT,
-                q14_nps         TEXT
+                q14_nps         TEXT,
+                ref_code        TEXT
             )
         """)
     log.info("PostgreSQL pool ready")
@@ -239,6 +248,34 @@ async def upsert_interview(user_id: int, username, **fields):
                 fields.get("q13_tool"), fields.get("q14_nps"),
             )
 
+
+async def get_or_create_ref(user_id: int) -> str:
+    """Return existing ref code for user or create a new one."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT ref_code FROM referrals WHERE owner_id=$1", user_id
+        )
+        if row:
+            return row["ref_code"]
+        # Generate short code: last 6 chars of user_id hash
+        import hashlib
+        code = hashlib.md5(str(user_id).encode()).hexdigest()[:8].upper()
+        await conn.execute(
+            "INSERT INTO referrals (ref_code, owner_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            code, user_id
+        )
+        return code
+
+
+async def get_ref_stats(ref_code: str) -> int:
+    """Count completed interviews that came via this ref code."""
+    async with pool.acquire() as conn:
+        count = await conn.fetchval(
+            "SELECT COUNT(*) FROM interviews WHERE ref_code=$1::text AND finished_at IS NOT NULL",
+            ref_code
+        )
+        return count or 0
+
 async def finish_interview(user_id: int):
     async with pool.acquire() as conn:
         await conn.execute(
@@ -251,8 +288,11 @@ async def get_all_csv() -> bytes:
         rows = await conn.fetch("SELECT * FROM interviews ORDER BY id")
     if not rows:
         return b"No data yet"
+    # Take fieldnames directly from DB columns — works even if schema changes
+    fieldnames = list(rows[0].keys())
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+    writer = csv.DictWriter(
+        output, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     for row in rows:
         writer.writerow(dict(row))
@@ -293,7 +333,25 @@ dp  = Dispatcher(storage=MemoryStorage())
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
+    # Extract referral code if present: /start REF_XXXXXXXX
+    args = message.text.split(maxsplit=1)
+    ref_code = args[1].strip() if len(args) > 1 else None
+    await state.update_data(ref_code=ref_code)
     await send_question(message, state, "q1_city")
+
+
+@dp.message(Command("mylink"))
+async def cmd_mylink(message: Message):
+    code = await get_or_create_ref(message.from_user.id)
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start={code}"
+    count = await get_ref_stats(code)
+    await message.answer(
+        f"Ваша реферальная ссылка:\n\n"
+        f"{link}\n\n"
+        f"По ней прошли интервью: {count} чел.\n\n"
+        f"Поделитесь с теми, кто недавно делал ремонт!"
+    )
 
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
@@ -359,6 +417,15 @@ async def handle_q12(message: Message, state: FSMContext):
     await send_question(message, state, "q13_tool")
 
 async def finish_flow(message: Message, state: FSMContext, user):
+    # Save ref_code if present
+    data = await state.get_data()
+    ref_code = data.get("ref_code")
+    if ref_code:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE interviews SET ref_code=$1::text WHERE user_id=$2 AND finished_at IS NULL",
+                ref_code, user.id
+            )
     await finish_interview(user.id)
     await state.set_state(Interview.done)
     await message.answer(
